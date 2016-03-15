@@ -22,6 +22,7 @@
 #define MAX_FILENAME_LEN 100
 #define MAX_COMMAND_LEN 50
 #define MAX_MESSAGE_LEN 1024
+#define MAX_DATA_LEN (MAX_MESSAGE_LEN-4)
 #define MAX_FLAG_LEN 50
 
 #define NONE 0
@@ -34,6 +35,7 @@ void *TCP_command_handler(void *);
 void *UDP_handler(void *);
 void intHandler(int sig);
 int sendall(int sock, char* buf, int len);
+int recvall(int sock, char* buf);
 
 int main(int argc, char** argv)
 {
@@ -303,7 +305,7 @@ void *TCP_recv_handler(void *socket_desc)
 	char transferFlag[MAX_FLAG_LEN];
     char filename[MAX_FILENAME_LEN];
 
-	while((read_size = recv(sock, message, MAX_MESSAGE_LEN-1, 0)) > 0)
+	while((read_size = recv(sock, message, MAX_MESSAGE_LEN-1, 0)) > 0) 
 	{
 		state = RECV;
 		message[read_size] = '\0';
@@ -375,7 +377,7 @@ void *TCP_recv_handler(void *socket_desc)
 
 					/* start receive data from server */
 					long long pcnt = 0;
-					while((read_size = recv(sock, message, MAX_MESSAGE_LEN-1, 0)) > 0)
+					while((read_size = recvall(sock, message)) > 0)
 					{
 						pcnt++;
 						message[read_size] = '\0';
@@ -383,7 +385,7 @@ void *TCP_recv_handler(void *socket_desc)
 						//printf("%s", message);
 						//fflush(stdout);
 						
-						fwrite(message, sizeof(uint8_t), read_size, fp);
+						fwrite(message, sizeof(uint8_t), read_size, fp); //++ drop header
 						fflush(fp);
 	
 						/* response client state */
@@ -442,4 +444,30 @@ int sendall(int sock, char* buf, int len)
 	}
 
 	return n==-1? -1: 0;
+}
+
+/* save data in buf and return data size */
+int recvall(int sock, char* buf)
+{
+	int recv_size = 0;
+	uint32_t len = 0;
+	char message[MAX_MESSAGE_LEN];
+	char output[MAX_MESSAGE_LEN];
+	int read_size;
+	while((read_size = recv(sock, message, MAX_DATA_LEN, 0)) > 0)
+	{
+		if(len==0 && read_size>=4)
+			memcpy(&len, message, sizeof(uint32_t)), len=ntohl(len);
+
+		memcpy(output+recv_size, message, read_size);
+		recv_size += read_size;
+		printf("get read_size: %d, recv_size: %d, len: %d\n", read_size, recv_size, len);
+		if(recv_size == len)
+			break;
+	}
+	recv_size -= 4;
+	memcpy(buf, output+4, recv_size);
+	buf[recv_size] = 0;
+	//printf("get message: %s\n", buf); // DEBUG
+	return recv_size;
 }

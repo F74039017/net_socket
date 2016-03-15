@@ -13,6 +13,7 @@
 #define MAX_FILENAME_LEN 100
 #define MAX_COMMAND_LEN 50
 #define MAX_MESSAGE_LEN 1024
+#define MAX_DATA_LEN (MAX_MESSAGE_LEN-4)
 #define MAX_FLAG_LEN 50
 
 #define THREAD_FAIL 1
@@ -212,8 +213,8 @@ void* TCP_command_handler(void* socket_desc)
 				struct stat st;
 				int result = stat(filename, &st);
 				long long fsize = st.st_size; // filesize
-				long long pn = fsize/MAX_MESSAGE_LEN;
-				if(fsize%MAX_MESSAGE_LEN)
+				long long pn = fsize/MAX_DATA_LEN;
+				if(fsize%MAX_DATA_LEN)
 					pn++;
 				sprintf(message, "%lld", pn);
 				sendall(sock, message, strlen(message)); // send expected packet numbers
@@ -230,8 +231,11 @@ void* TCP_command_handler(void* socket_desc)
 						break;
 					
 					/* start to transfer data */
-					if(read_size = fread(message, sizeof(uint8_t), MAX_MESSAGE_LEN-1, fp))
+					uint32_t conv;
+					if(read_size = fread(message, sizeof(uint8_t), MAX_DATA_LEN, fp))
 					{
+						conv = htonl(read_size+4); // include header size
+						send(sock, &conv, sizeof(uint32_t), 0);
 						sendall(sock, message, read_size);  // tranfer data to client until EOF
 						pcnt++;
 					}
