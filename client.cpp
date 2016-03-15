@@ -17,11 +17,17 @@
 
 #define THREAD_FAIL 1
 
+#define NONE 0
+#define CMD 1
+#define RECV 2
+
+bool state = NONE;
 void* TCP_command_handler(void *);
 void* TCP_recv_handler(void *);
+int sendall(int sock, char* buf, int len);
 int main(int argc , char *argv[])
 {
-    int socket_desc;
+    int sock_cmd_desc, sock_recv_desc;
     char ip[20];
     int port;
     struct sockaddr_in server;
@@ -48,9 +54,10 @@ int main(int argc , char *argv[])
             port = atoi(argv[2]);
     }
      
-    // Create command socket
-    socket_desc = socket(AF_INET , SOCK_STREAM , 0);
-    if (socket_desc == -1)
+    // Create sockets
+    sock_cmd_desc = socket(AF_INET , SOCK_STREAM , 0);
+    sock_recv_desc = socket(AF_INET , SOCK_STREAM , 0);
+    if (sock_cmd_desc==-1 || sock_recv_desc==-1)
     {
         printf("Could not create socket");
     }
@@ -60,26 +67,43 @@ int main(int argc , char *argv[])
     server.sin_port = htons( port );
 
  
-    // Connect to remote server
-    if (connect(socket_desc , (struct sockaddr *)&server , sizeof(server)) < 0)
+    // Connet command socket
+    if (connect(sock_cmd_desc , (struct sockaddr *)&server , sizeof(server)) < 0)
     {
         puts("connect error");
         return 1;
     }
-    puts("Connected");
+    puts("Connected cmd");
 
-    pthread_t sock_thread;
+    pthread_t sock_cmd_thread;
     int* param_desc = (int*)malloc(sizeof(int));
-    *param_desc = socket_desc;
-
-    if(pthread_create( &sock_thread, NULL, TCP_command_handler, (void*)param_desc) < 0)
+    *param_desc = sock_cmd_desc;
+    if(pthread_create( &sock_cmd_thread, NULL, TCP_command_handler, (void*)param_desc) < 0)
     {
         perror("Fail to create socket pthread");
         return THREAD_FAIL;
     }
 
-    pthread_join(sock_thread, NULL);
-    close(socket_desc);
+	// Connect recv socket
+    if (connect(sock_recv_desc, (struct sockaddr *)&server , sizeof(server)) < 0)
+    {
+        puts("connect error");
+        return 1;
+    }
+    puts("Connected recv");
+
+    pthread_t sock_recv_thread;
+    param_desc = (int*)malloc(sizeof(int));
+    *param_desc = sock_recv_desc;
+    if(pthread_create( &sock_recv_thread, NULL, TCP_recv_handler, (void*)param_desc) < 0)
+    {
+        perror("Fail to create socket pthread");
+        return THREAD_FAIL;
+    }
+
+    pthread_join(sock_cmd_thread, NULL);
+    pthread_join(sock_recv_desc, NULL);
+    close(sock_cmd_desc);
     return 0;
 }
 
@@ -97,10 +121,15 @@ void* TCP_command_handler(void* socket_desc)
 	while(1)
 	{
 		fgets(message, MAX_MESSAGE_LEN-1, stdin);
+		if(state == RECV)
+		{
+			puts("Receiving data, please wait");
+			continue;
+		}
 		message[strlen(message)-1] = '\0';
 		if(command[0]=='\n')
 			continue;
-		write(sock, message, strlen(message));
+		sendall(sock, message, strlen(message));
 		sscanf(message, "%s %s", command, filename);
 
 		/* commands */
@@ -116,10 +145,12 @@ void* TCP_command_handler(void* socket_desc)
 					FILE* fp = fopen(filename, "wb");
 					message[strlen(message)] = '\0';
 					long long pn = atoll(message); // record expected packet numbers
+					if(pn==0)
+						continue;
 
 					/* send READY_RECV flag */
 					strcpy(transferFlag, "READY_RECV");
-					write(sock, transferFlag, strlen(transferFlag));
+					sendall(sock, transferFlag, strlen(transferFlag));
 
 					/* start receive data from server */
 					long long pcnt = 0;
@@ -150,12 +181,12 @@ void* TCP_command_handler(void* socket_desc)
 						if(pcnt<pn)
 						{
 							strcpy(transferFlag, "READY_RECV");
-							write(sock, transferFlag, strlen(transferFlag));
+							sendall(sock, transferFlag, strlen(transferFlag));
 						}
 						else
 						{
 							strcpy(transferFlag, "COMPLETE");
-							write(sock, transferFlag, strlen(transferFlag));
+							sendall(sock, transferFlag, strlen(transferFlag));
 							break;
 						}
 					}
@@ -185,7 +216,7 @@ void* TCP_command_handler(void* socket_desc)
 				if(fsize%MAX_MESSAGE_LEN)
 					pn++;
 				sprintf(message, "%lld", pn);
-				write(sock, message, strlen(message)); // send expected packet numbers
+				sendall(sock, message, strlen(message)); // send expected packet numbers
 
 				/* wait READY_RECV or COMPLETE flag */
 				long long pcnt = 0;
@@ -201,7 +232,7 @@ void* TCP_command_handler(void* socket_desc)
 					/* start to transfer data */
 					if(read_size = fread(message, sizeof(uint8_t), MAX_MESSAGE_LEN-1, fp))
 					{
-						write(sock, message, read_size);  // tranfer data to client until EOF
+						sendall(sock, message, read_size);  // tranfer data to client until EOF
 						pcnt++;
 					}
 
@@ -219,7 +250,7 @@ void* TCP_command_handler(void* socket_desc)
 			else
 			{
 				strcpy(message, "FILE_NOT_FOUND");
-				write(sock, message, strlen(message));
+				sendall(sock, message, strlen(message));
 			}
 
 			fclose(fp);
@@ -254,6 +285,7 @@ void *TCP_recv_handler(void *socket_desc)
 
 	while((read_size = recv(sock, message, MAX_MESSAGE_LEN-1, 0)) > 0)
 	{
+		state = RECV;
 		message[read_size] = '\0';
 		sscanf(message, "%s %s", command, filename);
 		if(!strcmp(command, "get"))
@@ -271,7 +303,7 @@ void *TCP_recv_handler(void *socket_desc)
 				if(fsize%MAX_MESSAGE_LEN)
 					pn++;
 				sprintf(message, "%lld", pn);
-				write(sock, message, strlen(message)); // send expected packet numbers
+				sendall(sock, message, strlen(message)); // send expected packet numbers
 
 				/* wait READY_RECV or COMPLETE flag */
 				long long pcnt = 0;
@@ -283,7 +315,7 @@ void *TCP_recv_handler(void *socket_desc)
 					/* start to transfer data */
 					if(read_size = fread(message, sizeof(uint8_t), MAX_MESSAGE_LEN-1, fp))
 					{
-						write(sock, message, read_size);  // tranfer data to client until EOF
+						sendall(sock, message, read_size);  // tranfer data to client until EOF
 					}
 				}
 				puts("finish");
@@ -291,7 +323,7 @@ void *TCP_recv_handler(void *socket_desc)
 			else
 			{
 				strcpy(message, "FILE_NOT_FOUND");
-				write(sock, message, strlen(message));
+				sendall(sock, message, strlen(message));
 			}
 
 			fclose(fp);
@@ -301,7 +333,7 @@ void *TCP_recv_handler(void *socket_desc)
 		{
 			/* prevent recv command and wait flag at same time */
 			strcpy(transferFlag, "PREPARE");
-			write(sock, transferFlag, strlen(transferFlag));
+			sendall(sock, transferFlag, strlen(transferFlag));
 
 			if((read_size = recv(sock, message, MAX_MESSAGE_LEN-1, 0)) > 0) // wait pn or FILE_NOT_FOUND flag
 			{
@@ -317,7 +349,7 @@ void *TCP_recv_handler(void *socket_desc)
 
 					/* send READY_RECV flag */
 					strcpy(transferFlag, "READY_RECV");
-					write(sock, transferFlag, strlen(transferFlag));
+					sendall(sock, transferFlag, strlen(transferFlag));
 
 					/* start receive data from server */
 					long long pcnt = 0;
@@ -336,13 +368,13 @@ void *TCP_recv_handler(void *socket_desc)
 						if(pcnt<pn)
 						{
 							strcpy(transferFlag, "READY_RECV");
-							write(sock, transferFlag, strlen(transferFlag));
+							sendall(sock, transferFlag, strlen(transferFlag));
 						}
 						else
 						{
 							puts("send complete");
 							strcpy(transferFlag, "COMPLETE");
-							write(sock, transferFlag, strlen(transferFlag));
+							sendall(sock, transferFlag, strlen(transferFlag));
 							break;
 						}
 					}
@@ -355,5 +387,25 @@ void *TCP_recv_handler(void *socket_desc)
 		{
 			puts("error: no such command");
 		}
+		state = NONE;
 	}
+}
+
+int sendall(int sock, char* buf, int len)
+{
+	int total = 0;
+	int bytesleft;
+	bytesleft = strlen(buf);
+	int n;
+
+	while(total<len)
+	{
+		n = send(sock, buf+total, bytesleft, 0);
+		if(n==-1)
+			break;
+		total += n;
+		bytesleft -= n;
+	}
+
+	return n==-1? -1: 0;
 }

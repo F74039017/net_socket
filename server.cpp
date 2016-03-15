@@ -24,23 +24,30 @@
 #define MAX_MESSAGE_LEN 1024
 #define MAX_FLAG_LEN 50
 
+#define NONE 0
+#define CMD 1
+#define RECV 2
+
+bool state = NONE;
 void *TCP_recv_handler(void *);
 void *TCP_command_handler(void *);
 void *UDP_handler(void *);
 void intHandler(int sig);
+int sendall(int sock, char* buf, int len);
 
 int main(int argc, char** argv)
 {
     signal(SIGINT, intHandler);
 
 	/* server's and client's file descriptor => -1 means error */
-    int ss_desc , cs_desc;
+    int ss_recv_desc, ss_cmd_desc, cs_desc;
     struct sockaddr_in server , client;
     char *message;
      
     // Create socket
-    ss_desc = socket(AF_INET , SOCK_STREAM , 0);	// IPv4, TCP
-    if (ss_desc == -1)
+    ss_recv_desc = socket(AF_INET , SOCK_STREAM , 0);	// IPv4, TCP
+    ss_cmd_desc = socket(AF_INET , SOCK_STREAM , 0);	// IPv4, TCP
+    if (ss_recv_desc==-1 || ss_cmd_desc==-1)
 	{
         fprintf(stderr, "Fail to create server's socket");
 		return SERVER_SOCKET_FAIL;
@@ -49,7 +56,8 @@ int main(int argc, char** argv)
     // set reuse address => avoid TCP TIME_WAIT session
     /* Enable address reuse */
     int on = 1;
-    setsockopt( ss_desc, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on) );
+    setsockopt( ss_recv_desc, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on) );
+    setsockopt( ss_cmd_desc, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on) );
 
     /* Set port */
     int port = DEFAULT_PORT;
@@ -64,7 +72,7 @@ int main(int argc, char** argv)
     server.sin_port = htons( port );
      
     // Bind
-    if( bind(ss_desc, (struct sockaddr *)&server, sizeof(server)) < 0)
+    if(bind(ss_recv_desc, (struct sockaddr *)&server, sizeof(server)) < 0 || bind(ss_cmd_desc, (struct sockaddr *)&server, sizeof(server)) < 0)
     {
         puts("bind failed");
         return SERVER_BIND_FAIL;
@@ -72,42 +80,45 @@ int main(int argc, char** argv)
     puts("bind done");
 
     // Listen. Accept at most MAX_CLIENT clients
-    listen(ss_desc , MAX_CLIENT);
+    listen(ss_recv_desc , MAX_CLIENT);
+    listen(ss_cmd_desc, MAX_CLIENT);
      
     // accept() to wait for new clients
     puts("Waiting for incoming connections...");
+	pthread_t thread_recv, thread_cmd;
+	int *param_desc;
     int structlen = sizeof(struct sockaddr_in);
-    if( (cs_desc = accept(ss_desc, (struct sockaddr *)&client, (socklen_t*)&structlen)) )
+	int type = 0;
+    while( (cs_desc = accept(ss_recv_desc, (struct sockaddr *)&client, (socklen_t*)&structlen)) )
     {
         //  DEBUG - CHECK CLIENT DESC
         // printf("Client %d connect!!\n", cs_desc);
          
 		// Create pthread for recv
-        pthread_t thread;
-        int* param_desc = (int *)malloc(sizeof(int));
+        param_desc = (int *)malloc(sizeof(int));
         *param_desc = cs_desc;
          
-        if( pthread_create( &thread , NULL ,  TCP_recv_handler, (void*) param_desc) < 0)
-        {
-            perror("Fail to create new pthread");
-            return PTHREAD_CREATE_FAIL;
-        }
-		pthread_join(thread, NULL);
-
-		// Create pthread for command
-		//if( (cs_desc = accept(ss_desc, (struct sockaddr *)&client, (socklen_t*)&structlen)) )
-		//{
-			//param_desc = (int *)malloc(sizeof(int));
-			//*param_desc = cs_desc;
-			 
-			//if( pthread_create( &thread , NULL ,  TCP_command_handler, (void*) param_desc) < 0)
-			//{
-				//perror("Fail to create new pthread");
-				//return PTHREAD_CREATE_FAIL;
-			//}
-			//pthread_join(thread, NULL);
-		//}
+		if(!type)
+		{
+			type++;
+			if( pthread_create( &thread_recv , NULL ,  TCP_recv_handler, (void*) param_desc) < 0)
+			{
+				perror("Fail to create new pthread");
+				return PTHREAD_CREATE_FAIL;
+			}
+		}
+		else if(type==1)
+		{
+			if( pthread_create( &thread_cmd , NULL ,  TCP_command_handler, (void*) param_desc) < 0)
+			{
+				perror("Fail to create new pthread");
+				return PTHREAD_CREATE_FAIL;
+			}
+			break; // only accept one client
+		}
     }
+	pthread_join(thread_cmd, NULL);
+	pthread_join(thread_recv, NULL);
 
     if (cs_desc<0)
     {
@@ -132,6 +143,11 @@ void* TCP_command_handler(void* socket_desc)
 	while(1)
 	{
 		fgets(message, MAX_MESSAGE_LEN-1, stdin);
+		if(state == RECV)
+		{
+			puts("Receiving data, please wait");
+			continue;
+		}
 		message[strlen(message)-1] = '\0';
 		if(command[0]=='\n')
 			continue;
@@ -289,6 +305,7 @@ void *TCP_recv_handler(void *socket_desc)
 
 	while((read_size = recv(sock, message, MAX_MESSAGE_LEN-1, 0)) > 0)
 	{
+		state = RECV;
 		message[read_size] = '\0';
 		sscanf(message, "%s %s", command, filename);
 		if(!strcmp(command, "get"))
@@ -307,6 +324,8 @@ void *TCP_recv_handler(void *socket_desc)
 					pn++;
 				sprintf(message, "%lld", pn);
 				write(sock, message, strlen(message)); // send expected packet numbers
+				if(pn==0)
+					continue;
 
 				/* wait READY_RECV or COMPLETE flag */
 				long long pcnt = 0;
@@ -390,6 +409,7 @@ void *TCP_recv_handler(void *socket_desc)
 		{
 			puts("error: no such command");
 		}
+		state = NONE;
 	}
 }
 
@@ -403,4 +423,23 @@ void message_trim(char* msg)
 void intHandler(int sig)
 {
     exit(0);
+}
+
+int sendall(int sock, char* buf, int len)
+{
+	int total = 0;
+	int bytesleft;
+	bytesleft = len = strlen(buf);
+	int n;
+
+	while(total<len)
+	{
+		n = send(sock, buf+total, bytesleft, 0);
+		if(n==-1)
+			break;
+		total += n;
+		bytesleft -= n;
+	}
+
+	return n==-1? -1: 0;
 }
