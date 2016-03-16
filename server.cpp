@@ -22,7 +22,6 @@
 #define MAX_FILENAME_LEN 100
 #define MAX_COMMAND_LEN 50
 #define MAX_MESSAGE_LEN 1024
-#define MAX_DATA_LEN (MAX_MESSAGE_LEN-4)
 #define MAX_FLAG_LEN 50
 
 #define NONE 0
@@ -180,7 +179,7 @@ void* TCP_command_handler(void* socket_desc)
 					FILE* lfp = fopen("log.txt", "a");
 					fprintf(lfp, "\tget %s\n", filename);
 					printf("\tget %s\n", filename);
-					while((read_size = recv(sock, message, MAX_MESSAGE_LEN-1, 0)) > 0)
+					while((read_size = recvall(sock, message)) > 0)
 					{
 						pcnt++;
 						message[read_size] = '\0';
@@ -252,9 +251,12 @@ void* TCP_command_handler(void* socket_desc)
 						break;
 					
 					/* start to transfer data */
-					if(read_size = fread(message, sizeof(uint8_t), MAX_MESSAGE_LEN-1, fp))
+					uint32_t conv;
+					if(read_size = fread(message, sizeof(uint8_t), MAX_MESSAGE_LEN, fp))
 					{
-						write(sock, message, read_size);  // tranfer data to client until EOF
+						conv = htonl(read_size+4); // include header size
+						send(sock, &conv, sizeof(uint32_t), 0);
+						sendall(sock, message, read_size);  // tranfer data to client until EOF
 						pcnt++;
 					}
 
@@ -337,9 +339,13 @@ void *TCP_recv_handler(void *socket_desc)
 						break;
 					
 					/* start to transfer data */
-					if(read_size = fread(message, sizeof(uint8_t), MAX_MESSAGE_LEN-1, fp))
+					uint32_t conv;
+					if(read_size = fread(message, sizeof(uint8_t), MAX_MESSAGE_LEN, fp))
 					{
-						write(sock, message, read_size);  // tranfer data to client until EOF
+						conv = htonl(read_size+4); // include header size
+						send(sock, &conv, sizeof(uint32_t), 0);
+						sendall(sock, message, read_size);  // tranfer data to client until EOF
+						pcnt++;
 					}
 				}
 				puts("finish");
@@ -380,7 +386,6 @@ void *TCP_recv_handler(void *socket_desc)
 					while((read_size = recvall(sock, message)) > 0)
 					{
 						pcnt++;
-						message[read_size] = '\0';
 						/* DEBUG - OUTPUT DOWNLOAD DATA TO STDOUT */
 						//printf("%s", message);
 						//fflush(stdout);
@@ -431,7 +436,7 @@ int sendall(int sock, char* buf, int len)
 {
 	int total = 0;
 	int bytesleft;
-	bytesleft = len = strlen(buf);
+	bytesleft = len = len;
 	int n;
 
 	while(total<len)
@@ -454,14 +459,13 @@ int recvall(int sock, char* buf)
 	char message[MAX_MESSAGE_LEN];
 	char output[MAX_MESSAGE_LEN];
 	int read_size;
-	while((read_size = recv(sock, message, MAX_DATA_LEN, 0)) > 0)
+	while((read_size = recv(sock, message, MAX_MESSAGE_LEN, 0)) > 0)
 	{
 		if(len==0 && read_size>=4)
 			memcpy(&len, message, sizeof(uint32_t)), len=ntohl(len);
 
 		memcpy(output+recv_size, message, read_size);
 		recv_size += read_size;
-		printf("get read_size: %d, recv_size: %d, len: %d\n", read_size, recv_size, len);
 		if(recv_size == len)
 			break;
 	}
