@@ -303,6 +303,7 @@ void* TCP_handler(void* socket_desc)
 			FILE* lfp = fopen("log.txt", "a");
 			fprintf(lfp, "\trecv %s\n", filename);
 			printf("\trecv %s\n", filename);
+			double lper=0;
 			while((read_size = recvall(sock, message)) > 0)
 			{
 				pcnt++;
@@ -316,8 +317,9 @@ void* TCP_handler(void* socket_desc)
 				
 				/* create timestamp and log */
 				time(&ts);
-				if(lts<ts)
+				if(1.0*pcnt/pn*100>=lper)
 				{
+					lper += 5;
 					printf("%.1f%%\t%s", 1.0*pcnt/pn*100, ctime(&ts));
 					fprintf(lfp, "%.1f%%\t%s", 1.0*pcnt/pn*100, ctime(&ts));
 				}
@@ -369,6 +371,9 @@ void* TCP_handler(void* socket_desc)
 				fprintf(lfp, "\tput %s\n", filename);
 				printf("\tput %s\n", filename);
 				time_t ts, lts=0;
+				double lper=0;
+				struct timeval start, stop, elapse;
+				gettimeofday(&start, NULL);
 				while((read_size = recv(sock, message, MAX_MESSAGE_LEN-1, 0)) > 0) //++ Assume that ACK flag never lost
 				{
 					if(!strncmp(message, "COMPLETE", 8))
@@ -386,13 +391,29 @@ void* TCP_handler(void* socket_desc)
 
 					/* log */
 					time(&ts);
-					if(lts<ts)
+					if(1.0*pcnt/pn*100>=lper)
 					{
+						lper += 5;
 						printf("%.1f%%\t%s", 1.0*pcnt/pn*100, ctime(&ts));
 						fprintf(lfp, "%.1f%%\t%s", 1.0*pcnt/pn*100, ctime(&ts));
 					}
 					lts= ts;
 				}
+				gettimeofday(&stop, NULL);
+				timersub(&stop, &start, &elapse);
+				double throughput = 1.0*fsize/(elapse.tv_usec+elapse.tv_sec*CLOCKS_PER_SEC)*CLOCKS_PER_SEC;
+				if(throughput>1024*1024)
+				{
+					throughput /= 1024*1024;
+					printf("throughput: %.2lf MB/sec\n", throughput);
+				}
+				else if(throughput>1024)
+				{
+					throughput /= 1024;
+					printf("throughput: %.2lf KB/sec\n", throughput);
+				}
+				else
+					printf("throughput: %.2lf B/sec\n", throughput);
 				puts("finish");
 			}
 		}
@@ -467,6 +488,7 @@ void *UDP_handler(void *param)
 			FILE* lfp = fopen("log.txt", "a");
 			fprintf(lfp, "\trecv %s\n", filename);
 			printf("\trecv %s\n", filename);
+			double lper=0;
 			while((read_size = recvallfrom(sock, message, &addr_from)) >= 0)
 			{
 				if(read_size==0)
@@ -486,8 +508,9 @@ void *UDP_handler(void *param)
 				
 				/* create timestamp and log */
 				time(&ts);
-				if(lts<ts)
+				if(1.0*pcnt/pn*100u>=lper+5)
 				{
+					lper += 5;
 					printf("%.1f%%\t%s", 1.0*pcnt/pn*100, ctime(&ts));
 					fprintf(lfp, "%.1f%%\t%s", 1.0*pcnt/pn*100, ctime(&ts));
 				}
@@ -543,16 +566,22 @@ void *UDP_handler(void *param)
 				fprintf(lfp, "\tput %s\n", filename);
 				printf("\tput %s\n", filename);
 				time_t ts, lts=0;
-				uint32_t conv;
+				double lper=0;
+				uint32_t conv, rto_pcnt=0;
+				struct timeval start, stop, elapse;
+				gettimeofday(&start, NULL);
 				while((read_size = recvfrom(sock, transferFlag, MAX_MESSAGE_LEN-1, 0, (struct sockaddr*)&addr_from, &addr_len)) >= 0) 
 				{
 					if(!strncmp(transferFlag, "COMPLETE", 8))
 						break;
+
+					pcnt++;
 					/* resend */
 					if(!strncpy(transferFlag, "RTO", 3) || read_size==0)
 					{
 						sendto(sock, &conv, sizeof(uint32_t), 0, (struct sockaddr*)&addr_from, addr_len);
 						sendallto(sock, message, read_size, &addr_info);  // tranfer data to client until EOF
+						rto_pcnt++;
 						continue;
 					}
 					
@@ -562,18 +591,34 @@ void *UDP_handler(void *param)
 						conv = htonl(read_size+4); // include header size
 						sendto(sock, &conv, sizeof(uint32_t), 0, (struct sockaddr*)&addr_from, addr_len);
 						sendallto(sock, message, read_size, &addr_info);  // tranfer data to client until EOF
-						pcnt++;
 					}
 
 					/* log */
 					time(&ts);
-					if(lts<ts)
+					if(1.0*pcnt/pn*100>=lper+5)
 					{
+						lper += 5;
 						printf("%.1f%%\t%s", 1.0*pcnt/pn*100, ctime(&ts));
 						fprintf(lfp, "%.1f%%\t%s", 1.0*pcnt/pn*100, ctime(&ts));
 					}
 					lts= ts;
 				}
+				gettimeofday(&stop, NULL);
+				printf("packets loss rate: %.2lf %%\n", 1.0*rto_pcnt/pcnt*100);
+				timersub(&stop, &start, &elapse);
+				double throughput = 1.0*fsize/(elapse.tv_usec+elapse.tv_sec*CLOCKS_PER_SEC)*CLOCKS_PER_SEC;
+				if(throughput>1024*1024)
+				{
+					throughput /= 1024*1024;
+					printf("throughput: %.2lf MB/sec\n", throughput);
+				}
+				else if(throughput>1024)
+				{
+					throughput /= 1024;
+					printf("throughput: %.2lf KB/sec\n", throughput);
+				}
+				else
+					printf("throughput: %.2lf B/sec\n", throughput);
 				puts("finish");
 			}
 		}
