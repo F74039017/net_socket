@@ -11,6 +11,7 @@
 #include <stdint.h>
 #include <ctime>
 #include <pthread.h>
+#include <sys/time.h>
 
 /* Fail Code */
 #define SERVER_SOCKET_FAIL 1
@@ -420,6 +421,8 @@ void* TCP_handler(void* socket_desc)
 
 void *UDP_handler(void *param)
 {
+	struct timeval timeout_recv = {0, 300}; // RTO = 300 millisecond
+	struct timeval timeout_send = {0, 500}; // RTO = 500 millisecond
     struct _UDP_info UDP_info = *(struct _UDP_info*)param;
 	int sock = UDP_info.sock;
 	struct sockaddr_in addr_info = UDP_info.addr_info;
@@ -454,14 +457,24 @@ void *UDP_handler(void *param)
 			strcpy(transferFlag, "READY_RECV");
 			sendto(sock, transferFlag, strlen(transferFlag), 0, (struct sockaddr*)&addr_from, addr_len); // ready flag
 
+			/* set RTO value */
+			if(setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (char*)&timeout_recv, sizeof(struct timeval))<0)
+				puts("RTO setting error");
+
 			/* start receive data from server */
 			long long pcnt = 0;
 			time_t ts, lts=0;
 			FILE* lfp = fopen("log.txt", "a");
 			fprintf(lfp, "\trecv %s\n", filename);
 			printf("\trecv %s\n", filename);
-			while((read_size = recvallfrom(sock, message, &addr_from)) > 0)
+			while((read_size = recvallfrom(sock, message, &addr_from)) >= 0)
 			{
+				if(read_size==0)
+				{
+					strcpy(transferFlag, "RTO");
+					sendto(sock, transferFlag, strlen(transferFlag), 0, (struct sockaddr*)&addr_from, addr_len);
+					continue;
+				}
 				pcnt++;
 				message[read_size] = '\0';
 				/* DEBUG - OUTPUT DOWNLOAD DATA TO STDOUT */
@@ -520,19 +533,30 @@ void *UDP_handler(void *param)
 				sprintf(message, "%lld", pn);
 				sendto(sock, message, strlen(message), 0, (struct sockaddr*)&addr_info, addr_len); // send expected packet numbers
 
+				/* set RTO value */
+				if(setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (char*)&timeout_send, sizeof(struct timeval))<0)
+					puts("RTO setting error");
+
 				/* wait READY_RECV or COMPLETE flag */
 				long long pcnt = 0;
 				FILE* lfp = fopen("log.txt", "a");
 				fprintf(lfp, "\tput %s\n", filename);
 				printf("\tput %s\n", filename);
 				time_t ts, lts=0;
-				while((read_size = recvfrom(sock, message, MAX_MESSAGE_LEN-1, 0, (struct sockaddr*)&addr_from, &addr_len)) > 0) 
+				uint32_t conv;
+				while((read_size = recvfrom(sock, transferFlag, MAX_MESSAGE_LEN-1, 0, (struct sockaddr*)&addr_from, &addr_len)) >= 0) 
 				{
-					if(!strncmp(message, "COMPLETE", 8))
+					if(!strncmp(transferFlag, "COMPLETE", 8))
 						break;
+					/* resend */
+					if(!strncpy(transferFlag, "RTO", 3) || read_size==0)
+					{
+						sendto(sock, &conv, sizeof(uint32_t), 0, (struct sockaddr*)&addr_from, addr_len);
+						sendallto(sock, message, read_size, &addr_info);  // tranfer data to client until EOF
+						continue;
+					}
 					
 					/* start to transfer data */
-					uint32_t conv;
 					if(read_size = fread(message, sizeof(uint8_t), MAX_MESSAGE_LEN, fp))
 					{
 						conv = htonl(read_size+4); // include header size
@@ -638,7 +662,12 @@ int recvall(int sock, char* buf)
 	while((read_size = recv(sock, message, MAX_MESSAGE_LEN, 0)) > 0)
 	{
 		if(len==0 && read_size>=4)
+		{
 			memcpy(&len, message, sizeof(uint32_t)), len=ntohl(len);
+			/* prevent data recv in header packet */
+			memcpy(output+recv_size, message, read_size-4);
+			recv_size += read_size-4;
+		}
 
 		memcpy(output+recv_size, message, read_size);
 		recv_size += read_size;
@@ -662,13 +691,20 @@ int recvallfrom(int sock, char* buf, struct sockaddr_in *addr_from)
 	while((read_size = recvfrom(sock, message, MAX_MESSAGE_LEN, 0, (struct sockaddr*)addr_from, &addr_len)) > 0)
 	{
 		if(len==0 && read_size>=4)
+		{
 			memcpy(&len, message, sizeof(uint32_t)), len=ntohl(len);
+			/* prevent data recv in header packet */
+			memcpy(output+recv_size, message, read_size-4);
+			recv_size += read_size-4;
+		}
 
 		memcpy(output+recv_size, message, read_size);
 		recv_size += read_size;
 		if(recv_size == len)
 			break;
 	}
+	if(read_size==0)
+		return 0;
 	recv_size -= 4;
 	memcpy(buf, output+4, recv_size);
 	buf[recv_size] = 0;
