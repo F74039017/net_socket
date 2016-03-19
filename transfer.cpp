@@ -28,7 +28,7 @@
 /* buffer length */
 #define MAX_FILENAME_LEN 100
 #define MAX_COMMAND_LEN 50
-#define MAX_MESSAGE_LEN 1024
+#define MAX_MESSAGE_LEN 4096
 #define MAX_FLAG_LEN 50
 
 /* TCP UDP protocal */
@@ -406,15 +406,22 @@ void* TCP_handler(void* socket_desc)
 				{
 					throughput /= 1024*1024;
 					printf("throughput: %.2lf MB/sec\n", throughput);
+					fprintf(lfp, "throughput: %.2lf MB/sec\n", throughput);
 				}
 				else if(throughput>1024)
 				{
 					throughput /= 1024;
 					printf("throughput: %.2lf KB/sec\n", throughput);
+					fprintf(lfp, "throughput: %.2lf KB/sec\n", throughput);
 				}
 				else
+				{
 					printf("throughput: %.2lf B/sec\n", throughput);
+					fprintf(lfp, "throughput: %.2lf B/sec\n", throughput);
+				}
 				puts("finish");
+				fclose(lfp);
+				lfp = NULL;
 			}
 		}
 		else
@@ -442,8 +449,10 @@ void* TCP_handler(void* socket_desc)
 
 void *UDP_handler(void *param)
 {
-	struct timeval timeout_recv = {0, 300}; // RTO = 300 millisecond
-	struct timeval timeout_send = {0, 500}; // RTO = 500 millisecond
+	/* RTO setting */
+	struct timeval timeout_recv = {1, 0}; 
+	struct timeval timeout_send = {1, 500}; 
+	
     struct _UDP_info UDP_info = *(struct _UDP_info*)param;
 	int sock = UDP_info.sock;
 	struct sockaddr_in addr_info = UDP_info.addr_info;
@@ -493,17 +502,17 @@ void *UDP_handler(void *param)
 			{
 				if(read_size==0)
 				{
+					puts("RTO"); // RTO DEBUG
 					strcpy(transferFlag, "RTO");
 					sendto(sock, transferFlag, strlen(transferFlag), 0, (struct sockaddr*)&addr_from, addr_len);
 					continue;
 				}
 				pcnt++;
-				message[read_size] = '\0';
 				/* DEBUG - OUTPUT DOWNLOAD DATA TO STDOUT */
 				//printf("%s", message);
 				//fflush(stdout);
 				
-				fwrite(message, sizeof(uint8_t), read_size, fp);
+				fwrite(message, sizeof(char), read_size, fp);
 				fflush(fp);
 				
 				/* create timestamp and log */
@@ -569,6 +578,8 @@ void *UDP_handler(void *param)
 				double lper=0;
 				uint32_t conv, rto_pcnt=0;
 				struct timeval start, stop, elapse;
+				size_t last_size;
+				char last_message[MAX_MESSAGE_LEN+1];
 				gettimeofday(&start, NULL);
 				while((read_size = recvfrom(sock, transferFlag, MAX_MESSAGE_LEN-1, 0, (struct sockaddr*)&addr_from, &addr_len)) >= 0) 
 				{
@@ -577,10 +588,12 @@ void *UDP_handler(void *param)
 
 					pcnt++;
 					/* resend */
-					if(!strncpy(transferFlag, "RTO", 3) || read_size==0)
+					if(!strncmp(transferFlag, "RTO", 3) || read_size==0)
 					{
+						puts("RTO"); // RTO DEBUG
+						printf("conv: %d, read_size: %d\n", ntohl(conv), read_size);
 						sendto(sock, &conv, sizeof(uint32_t), 0, (struct sockaddr*)&addr_from, addr_len);
-						sendallto(sock, message, read_size, &addr_info);  // tranfer data to client until EOF
+						sendallto(sock, last_message, last_size, &addr_info);  // tranfer data to client until EOF
 						rto_pcnt++;
 						continue;
 					}
@@ -589,13 +602,20 @@ void *UDP_handler(void *param)
 					if(read_size = fread(message, sizeof(uint8_t), MAX_MESSAGE_LEN, fp))
 					{
 						conv = htonl(read_size+4); // include header size
+						last_size = read_size;
+						memcpy(last_message, message, read_size);
 						sendto(sock, &conv, sizeof(uint32_t), 0, (struct sockaddr*)&addr_from, addr_len);
 						sendallto(sock, message, read_size, &addr_info);  // tranfer data to client until EOF
 					}
 
 					/* log */
 					time(&ts);
-					if(1.0*pcnt/pn*100>=lper+5)
+					if(1.0*(pcnt-rto_pcnt)/pn*100>150)
+					{
+						puts("Server Crashed");
+						exit(EXIT_FAILURE);
+					}
+					if(1.0*(pcnt-rto_pcnt)/pn*100>=lper+5)
 					{
 						lper += 5;
 						printf("%.1f%%\t%s", 1.0*pcnt/pn*100, ctime(&ts));
@@ -611,15 +631,22 @@ void *UDP_handler(void *param)
 				{
 					throughput /= 1024*1024;
 					printf("throughput: %.2lf MB/sec\n", throughput);
+					fprintf(lfp, "throughput: %.2lf MB/sec\n", throughput);
 				}
 				else if(throughput>1024)
 				{
 					throughput /= 1024;
 					printf("throughput: %.2lf KB/sec\n", throughput);
+					fprintf(lfp, "throughput: %.2lf KB/sec\n", throughput);
 				}
 				else
+				{
 					printf("throughput: %.2lf B/sec\n", throughput);
+					fprintf(lfp, "throughput: %.2lf B/sec\n", throughput);
+				}
 				puts("finish");
+				fclose(lfp);
+				lfp = NULL;
 			}
 		}
 		else
@@ -730,7 +757,7 @@ int recvallfrom(int sock, char* buf, struct sockaddr_in *addr_from)
 {
 	int recv_size = 0;
 	uint32_t len = 0;
-	char message[MAX_MESSAGE_LEN];
+	char message[MAX_MESSAGE_LEN+1024];
 	char output[MAX_MESSAGE_LEN];
 	int read_size;
 	while((read_size = recvfrom(sock, message, MAX_MESSAGE_LEN, 0, (struct sockaddr*)addr_from, &addr_len)) > 0)
@@ -742,13 +769,16 @@ int recvallfrom(int sock, char* buf, struct sockaddr_in *addr_from)
 			memcpy(output+recv_size, message, read_size-4);
 			recv_size += read_size-4;
 		}
+		if(read_size==-1)
+			break;
 
 		memcpy(output+recv_size, message, read_size);
 		recv_size += read_size;
 		if(recv_size == len)
 			break;
 	}
-	if(read_size==0)
+	//printf("%d %d\n", recv_size, read_size); // RTO DEBUG
+	if(read_size==0 || read_size==-1)
 		return 0;
 	recv_size -= 4;
 	memcpy(buf, output+4, recv_size);
