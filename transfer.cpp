@@ -518,7 +518,9 @@ void *UDP_handler(void *param)
 			{
 				if(read_size==0)
 				{
-					puts("RTO"); // RTO DEBUG
+					#ifdef RTO
+						puts("RTO"); // RTO DEBUG
+					#endif
 					strcpy(transferFlag, "RTO");
 					sendto(sock, transferFlag, strlen(transferFlag), 0, (struct sockaddr*)&addr_from, addr_len);
 					continue;
@@ -530,7 +532,9 @@ void *UDP_handler(void *param)
 					continue;
 				}
 				pcnt++;
-				//printf("pcnt %d\n", pcnt); // DEBUG - RTO
+				#ifdef DEBUG
+					printf("pcnt %lld\n", pcnt); // DEBUG - RTO
+				#endif
 				/* DEBUG - OUTPUT DOWNLOAD DATA TO STDOUT */
 				//printf("%s", message);
 				//fflush(stdout);
@@ -608,7 +612,9 @@ void *UDP_handler(void *param)
 					/* resend */
 					if(!strncmp(transferFlag, "RTO", 3)) // data transfer uncomplete
 					{
-						puts("RTO"); // RTO DEBUG
+						#ifdef RTO
+							puts("RTO"); // RTO DEBUG
+						#endif
 						sendto(sock, pack_header, sizeof(uint32_t)*2, 0, (struct sockaddr*)&addr_from, addr_len);
 						sendallto(sock, last_message, last_size, &addr_info);  // tranfer data to client until EOF
 						rto_pcnt++;
@@ -645,6 +651,7 @@ void *UDP_handler(void *param)
 				}
 				gettimeofday(&stop, NULL);
 				printf("packets loss rate: %.2lf %%\n", 1.0*rto_pcnt/pcnt*100);
+				fprintf(lfp, "packets loss rate: %.2lf %%\n", 1.0*rto_pcnt/pcnt*100);
 				timersub(&stop, &start, &elapse);
 				double throughput = 1.0*fsize/(elapse.tv_usec+elapse.tv_sec*CLOCKS_PER_SEC)*CLOCKS_PER_SEC;
 				if(throughput>1024*1024)
@@ -665,6 +672,7 @@ void *UDP_handler(void *param)
 					fprintf(lfp, "throughput: %.2lf B/sec\n", throughput);
 				}
 				puts("finish");
+				fprintf(lfp, "\n");
 				fclose(lfp);
 				lfp = NULL;
 			}
@@ -784,7 +792,9 @@ int recvallfrom(int sock, char* buf, struct sockaddr_in *addr_from)
 			memcpy(&len, message, sizeof(uint32_t)), len=ntohl(len);
 			memcpy(&id, message+4, sizeof(uint32_t)), id=ntohl(id);
 			//printf("len %d id %d\n", len, id); // DEBUG
-			//printf("recv %d ", id); // DEBUG - RTO
+			#ifdef DEBUG
+				printf("recv %d ", id); // DEBUG - RTO
+			#endif
 		}
 		if(read_size==-1)
 			break;
@@ -799,8 +809,10 @@ int recvallfrom(int sock, char* buf, struct sockaddr_in *addr_from)
 		return 0;
 	if(id==last_id)
 	{
-		//printf("%d %d\n", id, last_id); // DEBUG
-		//puts("work");
+		#ifdef DEBUG
+			printf("%d %d\n", id, last_id); // DEBUG
+			puts("work");
+		#endif
 		return -1;
 	}
 
