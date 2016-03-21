@@ -53,9 +53,9 @@ int recvallfrom(int sock, char* buf, struct sockaddr_in *addr_from);
 char filename[MAX_FILENAME_LEN];
 int protocal, mode, port;
 char ip[20];
-uint32_t last_id = -1;
+uint32_t last_id = -1; // UDP check duplicated packets
 
-struct _UDP_info
+struct _UDP_info // container passed to udp thread
 {
 	int sock;
 	struct sockaddr_in addr_info;
@@ -110,6 +110,8 @@ int main(int argc, char** argv)
 
 
     int ss_desc, cs_desc;
+	/* udp => server(recv) only needs server addr info, client(send) needs both  */
+	/* tcp => use "server" to contain target's(for client) and own(for server) info */
     struct sockaddr_in server , client;
     int* sock;
     // Create socket
@@ -158,13 +160,13 @@ int main(int argc, char** argv)
 	}
 
     // Server socket info. sockaddr_in struct
-	if(mode==RECV)
+	if(mode==RECV) // server => needs its own info
 	{
 		server.sin_family = AF_INET;
 		server.sin_addr.s_addr = INADDR_ANY;
 		server.sin_port = htons( port );
 	}
-	else
+	else // client => needs target's info
 	{
 		server.sin_addr.s_addr = inet_addr( ip );
 		server.sin_family = AF_INET;
@@ -179,13 +181,12 @@ int main(int argc, char** argv)
 		if(mode==SEND) // client
 		{
 			// Connet command socket
-			if (connect(cs_desc, (struct sockaddr *)&server , sizeof(server)) < 0)
+			if (connect(cs_desc, (struct sockaddr *)&server , sizeof(server)) < 0) // server is target addr info
 			{
 				puts("connect error");
 				printf("Error when connecting! %s\n",strerror(errno)); 
 				return 1;
 			}
-			puts("Connected cmd");
 			// Create pthread for recv
 			param_desc = (int *)malloc(sizeof(int));
 			*param_desc = cs_desc;
@@ -199,7 +200,7 @@ int main(int argc, char** argv)
 		else // server
 		{
 			// Bind
-			if(bind(ss_desc, (struct sockaddr *)&server, sizeof(server)) < 0)
+			if(bind(ss_desc, (struct sockaddr *)&server, sizeof(server)) < 0) // its own info
 			{
 				puts("bind failed");
 				return SERVER_BIND_FAIL;
@@ -235,10 +236,10 @@ int main(int argc, char** argv)
 	}
 	else // UDP process
 	{
-		if(mode == SEND)
+		if(mode == SEND) // client
 		{
 			// Bind
-			if(bind(cs_desc, (struct sockaddr *)&client, sizeof(client)) < 0)
+			if(bind(cs_desc, (struct sockaddr *)&client, sizeof(client)) < 0) // need "client" to bind
 			{
 				puts("bind failed");
 				return SERVER_BIND_FAIL;
@@ -248,7 +249,7 @@ int main(int argc, char** argv)
 			// Create pthread for recv
 			struct _UDP_info* UDP_info = (struct _UDP_info*)malloc(sizeof(struct _UDP_info));
 			UDP_info->sock = cs_desc;
-			UDP_info->addr_info = server; // target server info
+			UDP_info->addr_info = server; // need "server" to locate target addr. pack into container and pass to thread.
 			 
 			if( pthread_create( &thread, NULL ,  UDP_handler, (void*) UDP_info) < 0)
 			{
@@ -256,10 +257,10 @@ int main(int argc, char** argv)
 				return PTHREAD_CREATE_FAIL;
 			}
 		}	
-		else
+		else // server
 		{
 			// Bind
-			if(bind(ss_desc, (struct sockaddr *)&server, sizeof(server)) < 0)
+			if(bind(ss_desc, (struct sockaddr *)&server, sizeof(server)) < 0) // its own info
 			{
 				puts("bind failed");
 				return SERVER_BIND_FAIL;
@@ -269,7 +270,7 @@ int main(int argc, char** argv)
 			// Create pthread for recv
 			struct _UDP_info* UDP_info = (struct _UDP_info*)malloc(sizeof(struct _UDP_info));
 			UDP_info->sock = ss_desc;
-			UDP_info->addr_info = server; // self addr info
+			UDP_info->addr_info = server; //-- it's seem useless...
 			 
 			if( pthread_create( &thread, NULL ,  UDP_handler, (void*) UDP_info) < 0)
 			{
@@ -317,8 +318,8 @@ void* TCP_handler(void* socket_desc)
 			long long pcnt = 0;
 			time_t ts, lts=0;
 			FILE* lfp = fopen("log.txt", "a");
-			fprintf(lfp, "\trecv %s\n", filename);
-			printf("\trecv %s\n", filename);
+			fprintf(lfp, "\ttcp recv %s\n", filename);
+			printf("\ttcp recv %s\n", filename);
 			double lper=0;
 			while((read_size = recvall(sock, message)) > 0)
 			{
@@ -384,8 +385,8 @@ void* TCP_handler(void* socket_desc)
 				/* wait READY_RECV or COMPLETE flag */
 				long long pcnt = 0;
 				FILE* lfp = fopen("log.txt", "a");
-				fprintf(lfp, "\tput %s\n", filename);
-				printf("\tput %s\n", filename);
+				fprintf(lfp, "\ttcp send %s\n", filename);
+				printf("\ttcp send %s\n", filename);
 				time_t ts, lts=0;
 				double lper=0;
 				struct timeval start, stop, elapse;
@@ -436,6 +437,7 @@ void* TCP_handler(void* socket_desc)
 					fprintf(lfp, "throughput: %.2lf B/sec\n", throughput);
 				}
 				puts("finish");
+				fprintf(lfp, "\n");
 				fclose(lfp);
 				lfp = NULL;
 			}
@@ -466,7 +468,7 @@ void* TCP_handler(void* socket_desc)
 void *UDP_handler(void *param)
 {
 	/* RTO setting */
-	struct timeval timeout_recv = {3, 0}; 
+	struct timeval timeout_recv = {3, 0};  // set recv RTO = 3sec
 	
     struct _UDP_info UDP_info = *(struct _UDP_info*)param;
 	int sock = UDP_info.sock;
@@ -487,7 +489,6 @@ void *UDP_handler(void *param)
 			strncpy(filename, message, read_size);
 		else
 			puts("filename error");
-		printf("get filename %s\n", filename); // debug
 		strcpy(transferFlag, "FILENAME_ACK");
 		sendto(sock, transferFlag, strlen(transferFlag), 0, (struct sockaddr*)&addr_from, addr_len); // filename ack 
 		
@@ -510,8 +511,8 @@ void *UDP_handler(void *param)
 			long long pcnt = 0;
 			time_t ts, lts=0;
 			FILE* lfp = fopen("log.txt", "a");
-			fprintf(lfp, "\trecv %s\n", filename);
-			printf("\trecv %s\n", filename);
+			fprintf(lfp, "\tudp recv %s\n", filename);
+			printf("\tudp recv %s\n", filename);
 			double lper=0;
 			last_id=-1;
 			while((read_size = recvallfrom(sock, message, &addr_from)) >= 0)
@@ -594,8 +595,8 @@ void *UDP_handler(void *param)
 				/* wait READY_RECV or COMPLETE flag */
 				long long pcnt = 0;
 				FILE* lfp = fopen("log.txt", "a");
-				fprintf(lfp, "\tput %s\n", filename);
-				printf("\tput %s\n", filename);
+				fprintf(lfp, "\tudp send %s\n", filename);
+				printf("\tudp send %s\n", filename);
 				time_t ts, lts=0;
 				double lper=0;
 				uint32_t conv, rto_pcnt=0, idconv, id=0;
