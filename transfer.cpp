@@ -53,6 +53,7 @@ int recvallfrom(int sock, char* buf, struct sockaddr_in *addr_from);
 char filename[MAX_FILENAME_LEN];
 int protocal, mode, port;
 char ip[20];
+uint32_t last_id = -1;
 
 struct _UDP_info
 {
@@ -297,7 +298,7 @@ void* TCP_handler(void* socket_desc)
 		if((read_size = recv(sock, message, MAX_MESSAGE_LEN-1, 0)) > 0) 
 			strncpy(filename, message, read_size);
 		else
-			puts("filename error");
+			puts("filename error"), printf("%s\n", message);
 		strcpy(transferFlag, "FILENAME_ACK");
 		send(sock, transferFlag, strlen(transferFlag), 0); // filename ack 
 		
@@ -465,8 +466,7 @@ void* TCP_handler(void* socket_desc)
 void *UDP_handler(void *param)
 {
 	/* RTO setting */
-	struct timeval timeout_recv = {1, 0}; 
-	struct timeval timeout_send = {1, 500}; 
+	struct timeval timeout_recv = {3, 0}; 
 	
     struct _UDP_info UDP_info = *(struct _UDP_info*)param;
 	int sock = UDP_info.sock;
@@ -513,6 +513,7 @@ void *UDP_handler(void *param)
 			fprintf(lfp, "\trecv %s\n", filename);
 			printf("\trecv %s\n", filename);
 			double lper=0;
+			last_id=-1;
 			while((read_size = recvallfrom(sock, message, &addr_from)) >= 0)
 			{
 				if(read_size==0)
@@ -522,11 +523,17 @@ void *UDP_handler(void *param)
 					sendto(sock, transferFlag, strlen(transferFlag), 0, (struct sockaddr*)&addr_from, addr_len);
 					continue;
 				}
+				else if(read_size == -1) // same packet
+				{
+					strcpy(transferFlag, "READY_RECV");
+					sendto(sock, transferFlag, strlen(transferFlag), 0, (struct sockaddr*)&addr_from, addr_len);
+					continue;
+				}
 				pcnt++;
+				//printf("pcnt %d\n", pcnt); // DEBUG - RTO
 				/* DEBUG - OUTPUT DOWNLOAD DATA TO STDOUT */
 				//printf("%s", message);
 				//fflush(stdout);
-				
 				fwrite(message, sizeof(char), read_size, fp);
 				fflush(fp);
 				
@@ -580,10 +587,6 @@ void *UDP_handler(void *param)
 				sprintf(message, "%lld", pn);
 				sendto(sock, message, strlen(message), 0, (struct sockaddr*)&addr_info, addr_len); // send expected packet numbers
 
-				/* set RTO value */
-				if(setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (char*)&timeout_send, sizeof(struct timeval))<0)
-					puts("RTO setting error");
-
 				/* wait READY_RECV or COMPLETE flag */
 				long long pcnt = 0;
 				FILE* lfp = fopen("log.txt", "a");
@@ -591,34 +594,37 @@ void *UDP_handler(void *param)
 				printf("\tput %s\n", filename);
 				time_t ts, lts=0;
 				double lper=0;
-				uint32_t conv, rto_pcnt=0;
+				uint32_t conv, rto_pcnt=0, idconv, id=0;
 				struct timeval start, stop, elapse;
 				size_t last_size;
 				char last_message[MAX_MESSAGE_LEN+1];
+				uint32_t pack_header[2];
 				gettimeofday(&start, NULL);
 				while((read_size = recvfrom(sock, transferFlag, MAX_MESSAGE_LEN-1, 0, (struct sockaddr*)&addr_from, &addr_len)) >= 0) 
 				{
 					if(!strncmp(transferFlag, "COMPLETE", 8))
 						break;
 
-					pcnt++;
 					/* resend */
-					if(!strncmp(transferFlag, "RTO", 3) || read_size==0)
+					if(!strncmp(transferFlag, "RTO", 3)) // data transfer uncomplete
 					{
 						puts("RTO"); // RTO DEBUG
-						sendto(sock, &conv, sizeof(uint32_t), 0, (struct sockaddr*)&addr_from, addr_len);
+						sendto(sock, pack_header, sizeof(uint32_t)*2, 0, (struct sockaddr*)&addr_from, addr_len);
 						sendallto(sock, last_message, last_size, &addr_info);  // tranfer data to client until EOF
 						rto_pcnt++;
 						continue;
 					}
 					
+					pcnt++;
 					/* start to transfer data */
 					if(read_size = fread(message, sizeof(uint8_t), MAX_MESSAGE_LEN, fp))
 					{
-						conv = htonl(read_size+4); // include header size
+						conv = htonl(read_size+8); // include header size
+						idconv = htonl(id++);
+						pack_header[0]=conv, pack_header[1]=idconv; // pack
 						last_size = read_size;
 						memcpy(last_message, message, read_size);
-						sendto(sock, &conv, sizeof(uint32_t), 0, (struct sockaddr*)&addr_from, addr_len);
+						sendto(sock, pack_header, sizeof(uint32_t)*2, 0, (struct sockaddr*)&addr_from, addr_len);
 						sendallto(sock, message, read_size, &addr_info);  // tranfer data to client until EOF
 					}
 
@@ -748,18 +754,15 @@ int recvall(int sock, char* buf)
 	while((read_size = recv(sock, message, MAX_MESSAGE_LEN, 0)) > 0)
 	{
 		if(len==0 && read_size>=4)
-		{
 			memcpy(&len, message, sizeof(uint32_t)), len=ntohl(len);
-			/* prevent data recv in header packet */
-			memcpy(output+recv_size, message, read_size-4);
-			recv_size += read_size-4;
-		}
 
 		memcpy(output+recv_size, message, read_size);
 		recv_size += read_size;
+		//printf("---%d %d\n", recv_size, read_size); // DEBUG
 		if(recv_size == len)
 			break;
 	}
+	//printf("%d %d\n", recv_size, read_size); // DEBUG
 	recv_size -= 4;
 	memcpy(buf, output+4, recv_size);
 	buf[recv_size] = 0;
@@ -770,18 +773,18 @@ int recvall(int sock, char* buf)
 int recvallfrom(int sock, char* buf, struct sockaddr_in *addr_from)
 {
 	int recv_size = 0;
-	uint32_t len = 0;
+	uint32_t len=0, id=-1;
 	char message[MAX_MESSAGE_LEN+1024];
-	char output[MAX_MESSAGE_LEN];
+	char output[MAX_MESSAGE_LEN+1024]; // include header
 	int read_size;
 	while((read_size = recvfrom(sock, message, MAX_MESSAGE_LEN, 0, (struct sockaddr*)addr_from, &addr_len)) > 0)
 	{
-		if(len==0 && read_size>=4)
+		if(id==-1 && read_size>=8)
 		{
 			memcpy(&len, message, sizeof(uint32_t)), len=ntohl(len);
-			/* prevent data recv in header packet */
-			memcpy(output+recv_size, message, read_size-4);
-			recv_size += read_size-4;
+			memcpy(&id, message+4, sizeof(uint32_t)), id=ntohl(id);
+			//printf("len %d id %d\n", len, id); // DEBUG
+			//printf("recv %d ", id); // DEBUG - RTO
 		}
 		if(read_size==-1)
 			break;
@@ -794,8 +797,16 @@ int recvallfrom(int sock, char* buf, struct sockaddr_in *addr_from)
 	//printf("%d %d\n", recv_size, read_size); // RTO DEBUG
 	if(read_size==0 || read_size==-1)
 		return 0;
-	recv_size -= 4;
-	memcpy(buf, output+4, recv_size);
+	if(id==last_id)
+	{
+		//printf("%d %d\n", id, last_id); // DEBUG
+		//puts("work");
+		return -1;
+	}
+
+	last_id = id;
+	recv_size -= 8;
+	memcpy(buf, output+8, recv_size);
 	buf[recv_size] = 0;
 	//printf("get message: %s\n", buf); // DEBUG
 	return recv_size;
