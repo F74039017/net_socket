@@ -1,13 +1,13 @@
 all : transfer
 
 server : server.cpp
-	gcc server.cpp -pthread -o server
+	g++ server.cpp -pthread -o server
 
 client : client.cpp
-	gcc client.cpp -pthread -o client
+	g++ client.cpp -pthread -o client
 
 transfer : transfer.cpp
-	gcc transfer.cpp -pthread -o transfer
+	g++ transfer.cpp -pthread -o transfer
 
 clean :
 	rm server client *.o

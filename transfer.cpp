@@ -12,6 +12,7 @@
 #include <ctime>
 #include <pthread.h>
 #include <sys/time.h>
+#include <errno.h>
 
 /* Fail Code */
 #define SERVER_SOCKET_FAIL 1
@@ -66,7 +67,7 @@ int main(int argc, char** argv)
 	/* Set tranfer mode */
 	char ip[20];
 
-	if(argc<5)
+	if(argc<4)
 	{
 		puts("Argument error: [send/recv] <ip> <port> [filename]");
 		return ARG_ERROR;
@@ -89,14 +90,17 @@ int main(int argc, char** argv)
 		}
 		mode = !strcmp(argv[2], "send")? SEND: RECV;
 
-		/* Set Ip address */
-        if(!strcmp(argv[3], "localhost")) //++ doesn't check format
-			strcpy(ip, "127.0.0.1");
-        else
-			strcpy(ip, argv[3]);
-
 		/* Set port */
-		port = atoi(argv[4]); //++ doesn't check format
+		port = atoi(argv[3]); //++ doesn't check format
+
+		if(mode==SEND)
+		{
+			/* Set Ip address */
+			if(!strcmp(argv[4], "localhost")) //++ doesn't check format
+				strcpy(ip, "127.0.0.1");
+			else
+				strcpy(ip, argv[4]);
+		}
 
 		/* Set filename */
 		if(argc==6)
@@ -153,9 +157,18 @@ int main(int argc, char** argv)
 	}
 
     // Server socket info. sockaddr_in struct
-    server.sin_family = AF_INET;
-    server.sin_addr.s_addr = INADDR_ANY;
-    server.sin_port = htons( port );
+	if(mode==RECV)
+	{
+		server.sin_family = AF_INET;
+		server.sin_addr.s_addr = INADDR_ANY;
+		server.sin_port = htons( port );
+	}
+	else
+	{
+		server.sin_addr.s_addr = inet_addr( ip );
+		server.sin_family = AF_INET;
+		server.sin_port = htons( port );
+	}
      
 
 	pthread_t thread;
@@ -168,6 +181,7 @@ int main(int argc, char** argv)
 			if (connect(cs_desc, (struct sockaddr *)&server , sizeof(server)) < 0)
 			{
 				puts("connect error");
+				printf("Error when connecting! %s\n",strerror(errno)); 
 				return 1;
 			}
 			puts("Connected cmd");
@@ -193,6 +207,7 @@ int main(int argc, char** argv)
 
 			// Listen. Accept at most MAX_CLIENT clients
 			listen(ss_desc, MAX_CLIENT);
+			puts("start listen");
 			 
 			// accept() to wait for new clients
 			puts("Waiting for incoming connections...");
@@ -591,7 +606,6 @@ void *UDP_handler(void *param)
 					if(!strncmp(transferFlag, "RTO", 3) || read_size==0)
 					{
 						puts("RTO"); // RTO DEBUG
-						printf("conv: %d, read_size: %d\n", ntohl(conv), read_size);
 						sendto(sock, &conv, sizeof(uint32_t), 0, (struct sockaddr*)&addr_from, addr_len);
 						sendallto(sock, last_message, last_size, &addr_info);  // tranfer data to client until EOF
 						rto_pcnt++;
